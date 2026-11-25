@@ -29,8 +29,11 @@ defmodule SurrealDB.Engine.Mock do
     method = request["method"]
     params = request["params"] || []
 
+    reply =
+      if is_function(responder, 1), do: responder.(request), else: responder.(method, params)
+
     response =
-      case responder.(method, params) do
+      case reply do
         {:ok, result} -> %{"id" => id, "result" => result}
         {:error, error} -> %{"id" => id, "error" => error}
       end

@@ -35,6 +35,7 @@ defmodule SurrealDB do
   alias SurrealDB.{Connection, Error, RecordId, Table, Uuid}
 
   @type conn :: GenServer.server()
+  @type data_handle :: conn() | SurrealDB.Transaction.t()
   @type thing :: String.t() | Table.t() | RecordId.t() | SurrealDB.Range.t()
   @type result :: {:ok, term()} | {:error, Error.t()}
 
@@ -118,58 +119,202 @@ defmodule SurrealDB do
   Returns `{:ok, results}` with one entry per statement, or `{:error, error}` for the first
   statement that failed.
   """
-  @spec query(conn(), String.t(), map()) :: result()
+  @spec query(data_handle(), String.t(), map()) :: result()
   def query(conn, surql, vars \\ %{}) do
     Connection.call(conn, "query", [surql, vars])
+  end
+
+  @doc "Returns the rows from a single list-valued query statement."
+  @spec all(data_handle(), String.t(), map()) :: {:ok, list()} | {:error, Error.t()}
+  def all(db, surql, vars \\ %{}) do
+    with {:ok, results} <- query(db, surql, vars) do
+      case results do
+        [rows] when is_list(rows) ->
+          {:ok, rows}
+
+        _ ->
+          {:error,
+           Error.new(:result_shape, "expected one list-valued statement",
+             details: %{
+               expected: :single_list,
+               statements: if(is_list(results), do: length(results), else: nil)
+             }
+           )}
+      end
+    end
+  end
+
+  @doc "Fetches one row, returning :error for an empty result and a cardinality error for duplicates."
+  @spec fetch_one(data_handle(), String.t(), map()) ::
+          {:ok, term()} | :error | {:error, Error.t()}
+  def fetch_one(db, surql, vars \\ %{}) do
+    with {:ok, rows} <- all(db, surql, vars) do
+      case rows do
+        [] ->
+          :error
+
+        [row] ->
+          {:ok, row}
+
+        many ->
+          {:error,
+           Error.new(:cardinality, "expected at most one row",
+             details: %{expected: :at_most_one, actual: length(many)}
+           )}
+      end
+    end
   end
 
   @doc """
   Runs a query and returns the raw per-statement objects, each with `"status"`, `"time"`,
   and `"result"`, without raising on a failed statement.
   """
-  @spec query_raw(conn(), String.t(), map()) :: result()
+  @spec query_raw(data_handle(), String.t(), map()) :: result()
   def query_raw(conn, surql, vars \\ %{}) do
     Connection.call(conn, "query", [surql, vars], meta: %{raw: true})
   end
 
+  @doc "Checks whether the connection can complete an RPC round trip."
+  @spec ping(conn()) :: result()
+  def ping(conn), do: Connection.call(conn, "ping", [])
+
+  @doc "Runs a parameterised query and raises SurrealDB.Error on failure."
+  @spec query!(data_handle(), String.t(), map()) :: list()
+  def query!(conn, surql, vars \\ %{}) do
+    case query(conn, surql, vars) do
+      {:ok, results} -> results
+      {:error, error} -> raise error
+    end
+  end
+
+  @doc "Opens an interactive WebSocket transaction. Pass its handle to query and CRUD calls."
+  @spec begin(conn()) :: {:ok, SurrealDB.Transaction.t()} | {:error, Error.t()}
+  def begin(conn) do
+    pid = GenServer.whereis(conn)
+
+    if Connection.session_info(pid).supports_live? do
+      with {:ok, id} <- Connection.call(pid, "begin", []) do
+        {:ok, %SurrealDB.Transaction{connection: pid, id: id}}
+      end
+    else
+      {:error, Error.new(:unsupported, "interactive transactions require WebSocket")}
+    end
+  end
+
+  @doc """
+  Runs a callback once in an interactive transaction. Return `{:ok, value}` to commit
+  or `{:error, reason}` to cancel. An unconfirmed commit yields `:transaction_unknown`.
+  """
+  @spec transaction(data_handle(), (SurrealDB.Transaction.t() -> {:ok, value} | {:error, reason})) ::
+          {:ok, value} | {:error, reason | Error.t()}
+        when value: term(), reason: term()
+  def transaction(%SurrealDB.Transaction{}, _fun),
+    do: {:error, Error.new(:unsupported, "nested transactions are unsupported")}
+
+  def transaction(db, fun) when is_function(fun, 1) do
+    with {:ok, tx} <- begin(db) do
+      case invoke_callback(tx, fun) do
+        {:ok, value} ->
+          case finalize_transaction(tx, :commit) do
+            {:ok, _} ->
+              {:ok, value}
+
+            {:error, %Error{kind: kind} = cause} when kind in [:connection, :timeout, :decode] ->
+              {:error,
+               Error.new(:transaction_unknown, "commit was not confirmed", details: cause)}
+
+            error ->
+              error
+          end
+
+        {:error, reason} ->
+          case finalize_transaction(tx, :cancel) do
+            {:ok, _} ->
+              {:error, reason}
+
+            {:error, cause} ->
+              {:error,
+               Error.new(:cancel_failed, "could not confirm cancellation",
+                 details: %{reason: reason, cause: cause}
+               )}
+          end
+      end
+    end
+  end
+
+  defp invoke_callback(tx, fun) do
+    case fun.(tx) do
+      {tag, _} = result when tag in [:ok, :error] ->
+        result
+
+      _ ->
+        raise ArgumentError, "transaction callback must return {:ok, value} or {:error, reason}"
+    end
+  catch
+    kind, reason ->
+      stack = __STACKTRACE__
+      finalize_transaction(tx, :cancel)
+      :erlang.raise(kind, reason, stack)
+  end
+
+  defp finalize_transaction(tx, operation) do
+    case operation do
+      :commit -> commit(tx)
+      :cancel -> cancel(tx)
+    end
+  catch
+    :exit, reason ->
+      {:error, Error.new(:connection, "transaction connection exited", details: reason)}
+  end
+
+  @doc "Commits the changes made through a transaction handle."
+  @spec commit(SurrealDB.Transaction.t()) :: result()
+  def commit(%SurrealDB.Transaction{connection: conn, id: id}),
+    do: Connection.call(conn, "commit", [id])
+
+  @doc "Discards the changes made through a transaction handle."
+  @spec cancel(SurrealDB.Transaction.t()) :: result()
+  def cancel(%SurrealDB.Transaction{connection: conn, id: id}),
+    do: Connection.call(conn, "cancel", [id])
+
   # ── CRUD ─────────────────────────────────────────────────────────────────────
 
   @doc "Selects all records in a table, a single record, or a record id range."
-  @spec select(conn(), thing()) :: result()
+  @spec select(data_handle(), thing()) :: result()
   def select(conn, thing), do: Connection.call(conn, "select", [normalize_thing(thing)])
 
   @doc "Creates a record. `data` defaults to an empty map."
-  @spec create(conn(), thing(), map()) :: result()
+  @spec create(data_handle(), thing(), map()) :: result()
   def create(conn, thing, data \\ %{}) do
     Connection.call(conn, "create", [normalize_thing(thing), data])
   end
 
   @doc "Inserts one record (a map) or many records (a list of maps) into a table."
-  @spec insert(conn(), String.t() | Table.t(), map() | [map()]) :: result()
+  @spec insert(data_handle(), String.t() | Table.t(), map() | [map()]) :: result()
   def insert(conn, table, data) do
     Connection.call(conn, "insert", [normalize_thing(table), data])
   end
 
   @doc "Inserts one or many graph edges (relations) into a table."
-  @spec insert_relation(conn(), String.t() | Table.t(), map() | [map()]) :: result()
+  @spec insert_relation(data_handle(), String.t() | Table.t(), map() | [map()]) :: result()
   def insert_relation(conn, table, data) do
     Connection.call(conn, "insert_relation", [normalize_thing(table), data])
   end
 
   @doc "Replaces the content of the matched records with `data`."
-  @spec update(conn(), thing(), map()) :: result()
+  @spec update(data_handle(), thing(), map()) :: result()
   def update(conn, thing, data \\ %{}) do
     Connection.call(conn, "update", [normalize_thing(thing), data])
   end
 
   @doc "Creates the records if they do not exist, otherwise replaces their content."
-  @spec upsert(conn(), thing(), map()) :: result()
+  @spec upsert(data_handle(), thing(), map()) :: result()
   def upsert(conn, thing, data \\ %{}) do
     Connection.call(conn, "upsert", [normalize_thing(thing), data])
   end
 
   @doc "Merges `data` into the matched records, keeping fields not present in `data`."
-  @spec merge(conn(), thing(), map()) :: result()
+  @spec merge(data_handle(), thing(), map()) :: result()
   def merge(conn, thing, data) do
     Connection.call(conn, "merge", [normalize_thing(thing), data])
   end
@@ -179,14 +324,14 @@ defmodule SurrealDB do
 
   Pass `diff: true` to receive the applied diff instead of the full records.
   """
-  @spec patch(conn(), thing(), [map()], keyword()) :: result()
+  @spec patch(data_handle(), thing(), [map()], keyword()) :: result()
   def patch(conn, thing, patches, opts \\ []) do
     params = [normalize_thing(thing), patches, Keyword.get(opts, :diff, false)]
     Connection.call(conn, "patch", params)
   end
 
   @doc "Deletes all records in a table, a single record, or a record id range."
-  @spec delete(conn(), thing()) :: result()
+  @spec delete(data_handle(), thing()) :: result()
   def delete(conn, thing), do: Connection.call(conn, "delete", [normalize_thing(thing)])
 
   @doc """
@@ -195,20 +340,20 @@ defmodule SurrealDB do
 
       SurrealDB.relate(db, "person:tobie", "wrote", "article:surreal", %{year: 2024})
   """
-  @spec relate(conn(), thing(), String.t() | Table.t(), thing(), map()) :: result()
+  @spec relate(data_handle(), thing(), String.t() | Table.t(), thing(), map()) :: result()
   def relate(conn, from, relation, to, data \\ %{}) do
     params = [normalize_thing(from), normalize_thing(relation), normalize_thing(to), data]
     Connection.call(conn, "relate", params)
   end
 
   @doc "Runs a built-in or user-defined function with the given arguments."
-  @spec run(conn(), String.t(), list()) :: result()
+  @spec run(data_handle(), String.t(), list()) :: result()
   def run(conn, name, args \\ []) when is_list(args) do
     Connection.call(conn, "run", [name, nil, args])
   end
 
   @doc "Runs a specific version of a user-defined function."
-  @spec run(conn(), String.t(), String.t(), list()) :: result()
+  @spec run(data_handle(), String.t(), String.t(), list()) :: result()
   def run(conn, name, version, args) when is_list(args) do
     Connection.call(conn, "run", [name, version, args])
   end

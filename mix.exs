@@ -1,22 +1,23 @@
 defmodule SurrealDB.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
-  @source_url "https://github.com/surrealdb/surrealdb.elixir"
+  @version "0.2.0"
+  @source_url "https://github.com/purrciel/strata_ql"
+  @upstream_url "https://github.com/surrealdb/surrealdb.elixir"
 
   def project do
     [
-      app: :surrealdb,
+      app: :strata_ql,
       version: @version,
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      name: "SurrealDB",
+      name: "StrataQL",
       description: description(),
       package: package(),
       docs: docs(),
-      source_url: @source_url
+      homepage_url: "https://surrealdb.com"
     ]
   end
 
@@ -33,6 +34,7 @@ defmodule SurrealDB.MixProject do
     [
       {:mint, "~> 1.6"},
       {:mint_web_socket, "~> 1.0"},
+      {:telemetry, "~> 1.0"},
       {:castore, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:decimal, "~> 2.1"},
@@ -49,7 +51,7 @@ defmodule SurrealDB.MixProject do
   defp package do
     [
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @source_url},
+      links: %{"Source" => @source_url, "Upstream" => @upstream_url},
       files: ~w(lib mix.exs README.md LICENSE CHANGELOG.md .formatter.exs)
     ]
   end

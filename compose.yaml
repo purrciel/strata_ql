@@ -1,0 +1,6 @@
+services:
+  surrealdb:
+    image: docker.io/surrealdb/surrealdb:v4.0.1
+    command: ["start", "--bind", "0.0.0.0:8000", "--user", "root", "--pass", "root", "memory"]
+    ports:
+      - "127.0.0.1:${SURREALDB_PORT:-8000}:8000"

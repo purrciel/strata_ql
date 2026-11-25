@@ -10,9 +10,21 @@ defmodule SurrealDB.Error do
     * `:auth` - authentication or authorisation failed.
     * `:timeout` - the request did not complete in time.
     * `:unsupported` - the operation is not available on the active engine.
+    * `:result_shape` or `:cardinality` - the query result violates the read contract.
+    * `:transaction_unknown` or `:cancel_failed` - transaction finalization was unconfirmed.
   """
 
-  @type kind :: :rpc | :connection | :decode | :auth | :timeout | :unsupported
+  @type kind ::
+          :rpc
+          | :connection
+          | :decode
+          | :auth
+          | :timeout
+          | :unsupported
+          | :result_shape
+          | :cardinality
+          | :transaction_unknown
+          | :cancel_failed
   @type t :: %__MODULE__{
           kind: kind(),
           message: String.t(),

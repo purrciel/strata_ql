@@ -39,7 +39,16 @@ defmodule SurrealDB.RPC do
   end
 
   @doc "Normalises a live notification action string into a lowercase atom."
-  @spec action(String.t() | atom()) :: atom()
+  @spec action(String.t() | atom()) :: atom() | String.t()
   def action(action) when is_atom(action), do: action
-  def action(action) when is_binary(action), do: action |> String.downcase() |> String.to_atom()
+
+  def action(action) when is_binary(action) do
+    case String.downcase(action) do
+      "create" -> :create
+      "update" -> :update
+      "delete" -> :delete
+      "killed" -> :killed
+      _ -> action
+    end
+  end
 end

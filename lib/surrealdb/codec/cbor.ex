@@ -102,6 +102,8 @@ defmodule SurrealDB.Codec.CBOR do
     [head(6, geometry_tag(type)), enc(coordinates)]
   end
 
+  defp enc(%MapSet{} = set), do: [head(6, 56), enc(MapSet.to_list(set))]
+
   defp enc(%Bytes{data: data}), do: [head(2, byte_size(data)), data]
 
   defp enc(integer) when is_integer(integer) and integer >= 0, do: head(0, integer)
@@ -268,6 +270,7 @@ defmodule SurrealDB.Codec.CBOR do
 
   defp apply_tag(50, value), do: {:incl, value}
   defp apply_tag(51, value), do: {:excl, value}
+  defp apply_tag(56, values) when is_list(values), do: MapSet.new(values)
   defp apply_tag(88, coordinates), do: %Geometry{type: :point, coordinates: coordinates}
   defp apply_tag(89, coordinates), do: %Geometry{type: :line, coordinates: coordinates}
   defp apply_tag(90, coordinates), do: %Geometry{type: :polygon, coordinates: coordinates}

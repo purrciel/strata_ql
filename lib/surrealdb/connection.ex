@@ -50,9 +50,16 @@ defmodule SurrealDB.Connection do
   end
 
   @doc "Performs an RPC call and returns the transformed reply."
-  @spec call(GenServer.server(), String.t(), list(), keyword()) ::
+  @spec call(GenServer.server() | SurrealDB.Transaction.t(), String.t(), list(), keyword()) ::
           {:ok, term()} | {:error, Error.t()}
-  def call(server, method, params, opts \\ []) do
+  def call(server, method, params, opts \\ [])
+
+  def call(%SurrealDB.Transaction{connection: conn, id: id}, method, params, opts) do
+    meta = Map.put(Keyword.get(opts, :meta, %{}), :txn, id)
+    call(conn, method, params, Keyword.put(opts, :meta, meta))
+  end
+
+  def call(server, method, params, opts) do
     timeout = Keyword.get(opts, :timeout, 30_000)
     meta = Keyword.get(opts, :meta, %{})
 
@@ -113,7 +120,7 @@ defmodule SurrealDB.Connection do
   @impl true
   def handle_call({:rpc, method, params, meta}, from, state) do
     {id, state} = next_id(state)
-    payload = encode_request(state, id, method, params)
+    payload = encode_request(state, id, method, params, meta)
 
     case state.engine.request(state.engine_state, payload, session(state)) do
       {:ok, engine_state} ->
@@ -259,6 +266,9 @@ defmodule SurrealDB.Connection do
     end
   end
 
+  defp route(%{"id" => id} = decoded, state) when is_map_key(state.pending, id),
+    do: deliver_reply(decoded, state)
+
   defp route(decoded, state) do
     case notification(decoded) do
       {:notification, live_id, action, result} ->
@@ -380,8 +390,10 @@ defmodule SurrealDB.Connection do
 
   defp next_id(state), do: {state.next_id, %{state | next_id: state.next_id + 1}}
 
-  defp encode_request(state, id, method, params) do
-    state.codec.encode(RPC.request(id, method, params))
+  defp encode_request(state, id, method, params, meta \\ %{}) do
+    request = RPC.request(id, method, params)
+    request = if Map.has_key?(meta, :txn), do: Map.put(request, "txn", meta.txn), else: request
+    state.codec.encode(request)
   end
 
   defp decode(state, binary), do: state.codec.decode(binary)

@@ -52,6 +52,7 @@ defmodule SurrealDB.Codec.JSON do
     %{"begin" => prepare_bound(begin_bound), "end" => prepare_bound(end_bound)}
   end
 
+  defp prepare(%MapSet{} = set), do: Enum.map(set, &prepare/1)
   defp prepare(list) when is_list(list), do: Enum.map(list, &prepare/1)
 
   defp prepare(%_struct{} = struct), do: struct |> Map.from_struct() |> prepare()

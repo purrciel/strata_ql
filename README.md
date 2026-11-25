@@ -1,4 +1,4 @@
-# SurrealDB for Elixir
+# StrataQL for Elixir
 
 An Elixir SDK for [SurrealDB](https://surrealdb.com) and
 [Agent Memory](https://surrealdb.com/agent-memory), built for idiomatic Elixir: supervised
@@ -15,7 +15,7 @@ It aims for feature parity with the official JavaScript SDKs (`surrealdb` and
 - **Two protocols**: CBOR (default, full type fidelity) and JSON.
 - **Native value types**: `RecordId`, `Table`, `Uuid`, `Duration`, `Datetime`, `Decimal`,
   `Geometry`, `Range`, `Bytes`, and `None`.
-- **Full RPC surface**: `use`, `signin`, `signup`, `authenticate`, `invalidate`, `let`,
+- **Database operations**: `use`, `signin`, `signup`, `authenticate`, `invalidate`, `let`,
   `unset`, `query`, `select`, `create`, `insert`, `insert_relation`, `update`, `upsert`,
   `merge`, `patch`, `delete`, `relate`, `run`, `info`, `version`, plus `export`/`import`.
 - **Live queries** delivered to any process as messages.
@@ -25,17 +25,44 @@ It aims for feature parity with the official JavaScript SDKs (`surrealdb` and
 
 ## Installation
 
-Add `:surrealdb` to the dependencies in your `mix.exs`:
+Add `:strata_ql` to the dependencies in your `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:surrealdb, "~> 0.1"}
+    {:strata_ql, path: "../surrealdb-prod"}
   ]
 end
 ```
 
-Then fetch dependencies with your usual workflow.
+The path assumes the fork is checked out beside your application. Replace the upstream dependency when migrating. The OTP application is now `:strata_ql`. Existing `SurrealDB` module names and live message patterns carry over.
+
+For single-statement list results use `SurrealDB.all/3`. Use `SurrealDB.fetch_one/3` for an optional unique row (returns `:error` when absent). Wrap related writes in `SurrealDB.transaction(db, fn tx -> ... end)` and return `{:ok, value}` to commit or `{:error, reason}` to cancel. See the [API design (Russian)](docs/api-design.ru.md).
+
+## Changes from upstream
+
+This fork starts at upstream commit `31c2af9`. It adds interactive transactions, a ping helper, a raising query variant, and CBOR sets (`MapSet`, tag 56). RPC replies containing an `action` field now reach their caller. Unknown live actions are delivered as strings.
+
+Interactive transactions require a WebSocket server with the [transaction RPC methods](https://surrealdb.com/docs/reference/protocols/rpc-protocol). Each handle belongs to the connection process that opened it. Other callers can keep using the same connection outside the transaction.
+
+```elixir
+{:ok, tx} = SurrealDB.begin(db)
+
+case SurrealDB.query(tx, "CREATE person CONTENT $attrs", %{attrs: %{name: "Ada"}}) do
+  {:ok, _} -> SurrealDB.commit(tx)
+  {:error, reason} ->
+    SurrealDB.cancel(tx)
+    {:error, reason}
+end
+```
+
+Use `SurrealDB.ping(db)` for a round trip and `SurrealDB.query!(db, "RETURN $n", %{n: 42})` for scripts that should raise on query errors.
+
+## Load test
+
+Run `MIX_ENV=test mix run bench/query_load.exs` to measure concurrent callers sharing one connection with the in-memory engine. Each query returns a distinct bound value and the script validates every reply. Set `SURREALDB_URL=ws://localhost:8000/rpc` for the same workload against a server. Provide `SURREALDB_USER`, `SURREALDB_PASS`, `SURREALDB_NS` and `SURREALDB_DB` as required by your instance. Adjust `REQUESTS` and `CONCURRENCY` to control load. Output includes successful requests per second and p50/p95/p99 call latency in microseconds. Any incorrect or failed reply makes the command exit unsuccessfully.
+
+Streaming queries, automatic session recovery, pooling and CBOR v2 remain open. Agent Memory uses the inherited routes and has [documented server compatibility limitations](https://surrealdb.com/docs/agent-memory/integrations/sdks/elixir).
 
 ## Connecting
 
@@ -262,4 +289,6 @@ Override the server URL with the `SURREALDB_URL` environment variable.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE). This is a fork of
+[surrealdb/surrealdb.elixir](https://github.com/surrealdb/surrealdb.elixir), also
+Apache-2.0-licensed.

@@ -60,10 +60,44 @@ defmodule SurrealDB.IntegrationTest do
     assert {:ok, _} = SurrealDB.kill(db, live_id)
   end
 
+  test "callback finalization controls visibility of both writes" do
+    db = connect()
+
+    for decision <- [:commit, :cancel] do
+      batch = System.unique_integer([:positive]) |> Integer.to_string()
+      read = "SELECT VALUE position FROM dx_events WHERE batch = $batch ORDER BY position"
+      write = "CREATE dx_events SET batch = $batch, position = $position"
+
+      result =
+        SurrealDB.transaction(db, fn tx ->
+          for position <- [1, 2] do
+            assert {:ok, _} = SurrealDB.query(tx, write, %{batch: batch, position: position})
+          end
+
+          assert {:ok, [1, 2]} = SurrealDB.all(tx, read, %{batch: batch})
+          if decision == :commit, do: {:ok, batch}, else: {:error, :cancelled}
+        end)
+
+      if decision == :commit do
+        assert result == {:ok, batch}
+        assert {:ok, [1, 2]} = SurrealDB.all(db, read, %{batch: batch})
+
+        assert {:ok, _} =
+                 SurrealDB.query(db, "DELETE dx_events WHERE batch = $batch", %{batch: batch})
+      else
+        assert result == {:error, :cancelled}
+        assert :error = SurrealDB.fetch_one(db, read, %{batch: batch})
+      end
+    end
+  end
+
   test "works over the HTTP engine too" do
     http_url = String.replace(@url, ~r/^ws/, "http")
     db = connect(url: http_url)
     assert {:ok, version} = SurrealDB.version(db)
     assert is_binary(version)
+
+    assert {:error, %SurrealDB.Error{kind: :unsupported}} =
+             SurrealDB.transaction(db, fn _ -> flunk() end)
   end
 end
