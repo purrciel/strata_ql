@@ -30,12 +30,12 @@ Add `:strata_ql` to the dependencies in your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:strata_ql, path: "../surrealdb-prod"}
+    {:strata_ql, git: "https://github.com/purrciel/strata_ql"}
   ]
 end
 ```
 
-The path assumes the fork is checked out beside your application. Replace the upstream dependency when migrating. The OTP application is now `:strata_ql`. Existing `SurrealDB` module names and live message patterns carry over.
+The OTP application is `:strata_ql`; existing `SurrealDB` module names and live message patterns carry over.
 
 For single-statement list results use `SurrealDB.all/3`. Use `SurrealDB.fetch_one/3` for an optional unique row (returns `:error` when absent). Wrap related writes in `SurrealDB.transaction(db, fn tx -> ... end)` and return `{:ok, value}` to commit or `{:error, reason}` to cancel. See the [API design (Russian)](docs/api-design.ru.md).
 

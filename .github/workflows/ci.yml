@@ -71,6 +71,6 @@ jobs:
           SURREALDB_DB: bench
         run: |
           docker run -d --name surreal -p 127.0.0.1:8000:8000 surrealdb/surrealdb:v4.0.1 start --bind 0.0.0.0:8000 --user root --pass root memory
-          curl --retry 30 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:8000/health
+          curl --retry 30 --retry-connrefused --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:8000/health
           curl -fsS -u root:root -H 'Surreal-NS: bench' -H 'Surreal-DB: bench' -H 'Accept: application/json' --data 'DEFINE NAMESPACE bench; DEFINE DATABASE bench;' http://127.0.0.1:8000/sql | jq -e 'all(.[]; .status == "OK")'
           mix run bench/query_load.exs
